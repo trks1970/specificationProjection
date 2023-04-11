@@ -1,0 +1,336 @@
+import com.google.cloud.tools.jib.gradle.BuildDockerTask
+import com.google.cloud.tools.jib.gradle.JibTask
+
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.0.5' apply false
+    id 'io.spring.dependency-management' version '1.1.0' apply false
+    id 'checkstyle'
+    id 'jacoco'
+    id "com.github.ben-manes.versions" version '0.45.0' apply false
+    id "com.github.spotbugs" version "5.0.13" apply false
+    id 'com.diffplug.spotless' version '6.14.0' apply false
+    id "org.sonarqube" version "4.0.0.2929" apply false
+    id "org.owasp.dependencycheck" version "8.0.2"
+    id 'com.google.cloud.tools.jib' version '3.3.1' apply false
+}
+
+
+ext {
+    versions = [
+            // ordered alphabetically
+            checkStyle      : '10.7.0',
+            findSecBugs     : '1.12.0',
+            jsonNullable    : '0.2.4',
+            jsr305          : '3.0.2',
+            lombok          : '1.18.26',
+            mapstruct       : '1.5.3.Final',
+            spotBugs        : "4.7.3",
+            springDoc       : '1.7.0',
+            springEnvers    : '3.0.4'
+    ]
+}
+
+allprojects {
+    group = 'com.github.trks1970.specificationProjection'
+    version = '0.0.0'
+    apply plugin: 'org.owasp.dependencycheck'
+    ext {
+        appMainClass = "module.main.class"
+    }
+}
+
+subprojects {
+    apply plugin: 'java'
+    apply plugin: 'maven-publish'
+    apply plugin: 'org.springframework.boot'
+    apply plugin: 'io.spring.dependency-management'
+
+    apply plugin: 'checkstyle'
+    apply plugin: 'jacoco'
+    apply plugin: 'com.github.spotbugs'
+    apply plugin: 'com.diffplug.spotless'
+    apply plugin: 'org.sonarqube'
+    apply plugin: 'com.github.ben-manes.versions'
+
+    apply plugin: 'com.google.cloud.tools.jib'
+
+    var sonarUrl = System.getenv("CI_SONAR_URL") ?: "http://localhost:9000"
+    // Required by jib CI, currently disabled
+    // var imageName = "/path/to/registry/${project.name}:${version}"
+
+    processResources {
+        filesMatching('**/application*.yaml') {
+            expand(project.properties)
+        }
+    }
+
+    java {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    repositories {
+        mavenLocal()
+        /*
+        maven {
+            url = "https://path/to/maven/repo"
+            allowInsecureProtocol = true
+        }
+        */
+        mavenCentral()
+    }
+
+    spotless {
+        java {
+            importOrder()
+            removeUnusedImports()
+            googleJavaFormat()
+        }
+    }
+
+    checkstyle {
+        ignoreFailures = false
+        configFile = file("${rootProject.rootDir}/checkstyle/google_checks.xml")
+        configProperties = [samedir: "${rootProject.rootDir}/checkstyle"]
+        toolVersion = "${versions.checkStyle}"
+    }
+
+    // see: https://github.com/spotbugs/spotbugs/issues/527
+    spotbugs {
+        ignoreFailures = false
+        spotbugsTest.enabled = false
+        excludeFilter = file("${rootProject.rootDir}/spotbugs/excludeFilter.xml")
+        toolVersion = "${versions.spotBugs}"
+        // see: https://github.com/spotbugs/spotbugs-gradle-plugin/issues/676
+        dependencies {
+            spotbugsSlf4j("org.slf4j:slf4j-simple")
+        }
+    }
+
+    compileJava {
+        options.compilerArgs += ["-Xlint:unchecked"]
+        options.compilerArgs += ["-Xlint:deprecation"]
+        options.compilerArgs += "-Amapstruct.defaultComponentModel=spring"
+        options.compilerArgs += "-Amapstruct.unmappedTargetPolicy=ERROR"
+    }
+    compileJava.dependsOn 'spotlessApply'
+
+    compileTestJava {
+        options.compilerArgs += ["-Xlint:unchecked"]
+        options.compilerArgs += ["-Xlint:deprecation"]
+        options.compilerArgs += "-Amapstruct.defaultComponentModel=spring"
+        options.compilerArgs += "-Amapstruct.unmappedTargetPolicy=ERROR"
+    }
+
+    jacocoTestReport {
+        reports {
+            xml.required = true
+            //xml.outputLocation = file("${buildDir}/reports/jacoco.xml")
+        }
+    }
+
+    test {
+        testLogging.showStandardStreams = true
+        useJUnitPlatform()
+    }
+    test.finalizedBy jacocoTestReport
+
+    sonar {
+        properties {
+            property "sonar.host.url", sonarUrl
+            property "sonar.login", "admin"
+            // you have to set this manually in sonar
+            property "sonar.password", "password"
+            //property 'sonar.coverage.jacoco.xmlReportPaths', "${buildDir}/reports/jacoco.xml"
+        }
+    }
+    tasks.named("sonar").configure {
+        dependsOn test
+    }
+
+    jar {
+        // see: https://youtrack.jetbrains.com/issue/IDEA-212386
+        //noinspection GroovyAccessibility
+        archiveBaseName = "${project.name}"
+        //noinspection GroovyAccessibility
+        archiveVersion = "${project.version}"
+        enabled = true
+        archiveClassifier = ""
+    }
+
+    // --SpringBoot
+    springBoot {
+        mainClass = appMainClass
+    }
+
+    bootJar {
+        enabled = false
+        //noinspection GroovyAccessibility
+        archiveFileName = "app.jar"
+        // see: https://youtrack.jetbrains.com/issue/IDEA-212386
+        //noinspection GroovyAccessibility
+        mainClass = appMainClass
+    }
+    tasks.named("bootJar") {
+        onlyIf {
+            project.name.startsWith("service-")
+        }
+    }
+    // --SpringBoot
+
+    // Maven-Publish--
+    publishing {
+        publications {
+            mavenJava(MavenPublication) {
+                from components.java
+            }
+        }
+    }
+    tasks.withType(PublishToMavenLocal).configureEach {
+        onlyIf {
+            project.name.startsWith("specificationProjection-")
+        }
+        repositories {
+            mavenLocal()
+        }
+        dependsOn jar
+    }
+    tasks.withType(PublishToMavenRepository).configureEach {
+        onlyIf {
+            project.name.startsWith("specificationProjection-")
+        }
+        repositories {
+            /*
+            maven {
+                name = 'nexus'
+                url = System.getenv("CI_MAVEN_REPO_URI")
+            }
+             */
+        }
+        dependsOn jar
+    }
+    // -- Maven-Publish
+
+    // Jib--
+    afterEvaluate {
+        jib {
+            from {
+                image = "amazoncorretto:17-alpine-jdk"
+            }
+            container {
+                mainClass = appMainClass
+                setCreationTime("USE_CURRENT_TIMESTAMP")
+                jvmFlags = ["-Xms128m", "-Xmx1024m"]
+            }
+            /* Jib in CI is disabled
+            to {
+                image = System.getenv("CI_REGISTRY_URI") + "/" + imageName
+                auth {
+                    username = System.getenv("CI_REGISTRY_USER") ?: "username"
+                    password = System.getenv("CI_REGISTRY_PASSWORD") ?: "password"
+                }
+            }
+            */
+        }
+        // local build with docker
+        tasks.jibDockerBuild {
+            jib {
+                to {
+                    image = project.name
+                    tags = [project.version]
+                }
+            }
+        }
+
+        tasks.withType(BuildDockerTask).configureEach {
+            onlyIf {
+                project.name.startsWith("service-")
+            }
+            dependsOn jar
+        }
+
+        // JibTask is disabled (no-op)
+        tasks.withType(JibTask).tap {
+            configureEach {
+                onlyIf {
+                    project.name.startsWith("service-")
+                }
+                dependsOn jar
+            }
+        }
+    }
+    // --Jib
+
+    dependencies {
+        // Common Dependencies--
+        {
+            spotbugsPlugins "com.h3xstream.findsecbugs:findsecbugs-plugin:${versions.findSecBugs}"
+
+            // Spring
+            implementation "org.springframework.boot:spring-boot-starter-data-jpa"
+            implementation "org.springframework.boot:spring-boot-starter-validation"
+            implementation "org.springframework.boot:spring-boot-starter-security"
+
+
+            // History
+            implementation "org.springframework.data:spring-data-envers:${versions.springEnvers}"
+
+            // see: https://stackoverflow.com/questions/53326271/spring-nullable-annotation-generates-unknown-enum-constant-warning
+            // implementation "com.google.code.findbugs:jsr305:${versions.jsr305}"
+            compileOnly 'com.google.code.findbugs:annotations:3.0.1'
+            compileOnly 'com.google.code.findbugs:jsr305:3.0.1'
+            testCompileOnly 'com.google.code.findbugs:annotations:3.0.1'
+            testCompileOnly 'com.google.code.findbugs:jsr305:3.0.1'
+
+            // MapStruct
+            implementation "org.mapstruct:mapstruct:${versions.mapstruct}"
+
+            //Lombok
+            compileOnly "org.projectlombok:lombok:${versions.lombok}"
+
+            annotationProcessor "org.hibernate:hibernate-jpamodelgen:6.1.7.Final"
+            annotationProcessor "org.projectlombok:lombok-mapstruct-binding:0.2.0"
+            annotationProcessor "org.mapstruct:mapstruct-processor:${versions.mapstruct}"
+            annotationProcessor "org.projectlombok:lombok:${versions.lombok}"
+
+            // TEST
+            testImplementation "org.springframework.boot:spring-boot-starter-test"
+            // see: https://github.com/database-rider/database-rider/issues/515
+            testImplementation "com.h2database:h2:2.1.214"
+
+            testImplementation "org.assertj:assertj-core:3.23.1"
+            testImplementation "com.tngtech.archunit:archunit-junit5:1.0.0"
+            testImplementation "com.github.database-rider:rider-junit5:1.35.0"
+            testCompileOnly "org.projectlombok:lombok:1.18.24"
+
+            testAnnotationProcessor "org.hibernate:hibernate-jpamodelgen:6.1.7.Final"
+            testAnnotationProcessor "org.projectlombok:lombok-mapstruct-binding:0.2.0"
+            testAnnotationProcessor "org.mapstruct:mapstruct-processor:${versions.mapstruct}"
+            testAnnotationProcessor "org.projectlombok:lombok:${versions.lombok}"
+        }
+        // --Common Dependencies
+
+        // Lib Base Dependencies--
+        if (project.name.startsWith("specificationProjection-")) {
+            // everything is in specificationProjection
+        }
+        // --Lib Base Dependencies
+
+        // Service Base Dependencies--
+        if (project.name.startsWith("service-")) {
+            // Swagger for Rest APIS
+            implementation "org.springdoc:springdoc-openapi:${versions.springDoc}"
+            implementation "org.springdoc:springdoc-openapi-ui:${versions.springDoc}"
+            implementation "org.springframework.boot:spring-boot-starter-actuator"
+
+            // TEST--
+            testImplementation "org.springframework.boot:spring-boot-starter-test"
+            testImplementation "org.springframework.security:spring-security-test"
+            // --TEST
+        }
+        // --Service Base Dependencies
+
+    }
+
+}
